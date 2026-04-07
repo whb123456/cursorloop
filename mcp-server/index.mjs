@@ -114,14 +114,34 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         return { content: [{ type: 'text', text: JSON.stringify({ session_id: sid, status: 'cancelled' }) }] };
       }
       const msg = resp.message || '';
-      const result = {
+      const meta = {
         session_id: sid,
         status: 'message',
         message: msg,
         next_action: `回复用户后，立刻调用 check_messages(session_id="${sid}", last_response="<你的回复摘要>")`,
       };
-      if (resp.attachments?.length) result.attachments = resp.attachments;
-      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+      const content = [{ type: 'text', text: JSON.stringify(meta) }];
+
+      // 把附件作为多模态 content blocks 追加，让 AI 能真正读取内容
+      for (const att of (resp.attachments || [])) {
+        if (att.type === 'image' && att.data && att.mimeType) {
+          content.push({ type: 'image', data: att.data, mimeType: att.mimeType });
+        } else if (att.type === 'pdf' && att.data) {
+          // PDF 以 resource blob 形式传递，支持 Claude 原生 PDF 解析
+          content.push({
+            type: 'resource',
+            resource: {
+              uri: `file://${att.name}`,
+              mimeType: 'application/pdf',
+              blob: att.data,
+            },
+          });
+        } else if (att.type === 'text' && att.data) {
+          content.push({ type: 'text', text: `\n--- 附件: ${att.name} ---\n${att.data}\n--- 附件结束 ---` });
+        }
+      }
+
+      return { content };
     }
 
     // 心跳
