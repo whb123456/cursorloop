@@ -16,6 +16,13 @@ interface ChatMessage {
   timestamp: number;
 }
 
+interface AttachedFile {
+  kind: 'image' | 'pdf' | 'text' | 'binary';
+  name: string;
+  content?: string;
+  mimeType?: string;
+}
+
 interface Session {
   sessionId: string;
   title: string;
@@ -152,7 +159,20 @@ const css = `
     color: var(--vscode-button-foreground);
   }
   .btn-send:disabled { opacity: 0.5; cursor: default; }
-  .btn-cancel {
+  .attach-list {
+    display: flex; flex-wrap: wrap; gap: 4px; padding: 0 0 4px;
+  }
+  .attach-tag {
+    display: flex; align-items: center; gap: 4px;
+    background: var(--vscode-badge-background);
+    color: var(--vscode-badge-foreground);
+    border-radius: 4px; padding: 2px 7px; font-size: 11px;
+  }
+  .attach-tag-remove {
+    cursor: pointer; opacity: 0.7; font-size: 12px;
+  }
+  .attach-tag-remove:hover { opacity: 1; }
+  .btn-attach {
     background: var(--vscode-button-secondaryBackground, #444);
     color: var(--vscode-button-secondaryForeground, #ccc);
   }
@@ -171,7 +191,9 @@ function App() {
   const [sessions, setSessions] = useState<Map<string, Session>>(new Map());
   const [activeId, setActiveId] = useState<string | null>(null);
   const [input, setInput] = useState('');
+  const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
   const messagesRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const activeSession = activeId ? sessions.get(activeId) : null;
 
@@ -234,10 +256,50 @@ function App() {
 
   useEffect(scrollToBottom, [activeSession?.history.length, scrollToBottom]);
 
+  const readFileAsAttachment = useCallback((file: File): Promise<AttachedFile> => {
+    return new Promise(resolve => {
+      const ext = file.name.split('.').pop()?.toLowerCase() || '';
+      const isImage = file.type.startsWith('image/');
+      const isPdf = file.type === 'application/pdf' || ext === 'pdf';
+      const isText = file.type.startsWith('text/') || ['md', 'txt', 'json', 'yaml', 'yml', 'js', 'ts', 'py', 'java', 'c', 'cpp', 'h', 'cs', 'go', 'rs', 'swift', 'kt', 'rb', 'php', 'html', 'css', 'xml', 'sh', 'bash'].includes(ext);
+
+      if (isImage || isPdf) {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const dataUrl = reader.result as string;
+          const base64 = dataUrl.split(',')[1];
+          resolve({ kind: isImage ? 'image' : 'pdf', name: file.name, content: base64, mimeType: file.type || 'application/pdf' });
+        };
+        reader.onerror = () => resolve({ kind: isImage ? 'image' : 'pdf', name: file.name });
+        reader.readAsDataURL(file);
+      } else if (isText) {
+        const reader = new FileReader();
+        reader.onload = () => resolve({ kind: 'text', name: file.name, content: reader.result as string });
+        reader.onerror = () => resolve({ kind: 'binary', name: file.name });
+        reader.readAsText(file);
+      } else {
+        resolve({ kind: 'binary', name: file.name });
+      }
+    });
+  }, []);
+
+  const onFileChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    const attachments = await Promise.all(files.map(readFileAsAttachment));
+    setAttachedFiles(prev => [...prev, ...attachments]);
+    e.target.value = '';
+  }, [readFileAsAttachment]);
+
   const send = useCallback(() => {
     const text = input.trim();
-    if (!text || !activeId) return;
-    vscode.postMessage({ type: 'send', sessionId: activeId, message: text });
+    if ((!text && attachedFiles.length === 0) || !activeId) return;
+    const historyContent = text + (attachedFiles.length ? `\n[附件: ${attachedFiles.map(f => f.name).join(', ')}]` : '');
+    if (attachedFiles.length > 0) {
+      vscode.postMessage({ type: 'sendWithFiles', sessionId: activeId, message: text, files: attachedFiles });
+    } else {
+      vscode.postMessage({ type: 'send', sessionId: activeId, message: text });
+    }
     // 乐观更新
     setSessions(prev => {
       const next = new Map(prev);
@@ -246,15 +308,16 @@ function App() {
         next.set(activeId, {
           ...s,
           status: 'processing',
-          history: [...s.history, { role: 'user', content: text, timestamp: Date.now() }],
+          history: [...s.history, { role: 'user', content: historyContent, timestamp: Date.now() }],
           draft: '',
         });
       }
       return next;
     });
     setInput('');
+    setAttachedFiles([]);
     scrollToBottom();
-  }, [input, activeId, scrollToBottom]);
+  }, [input, attachedFiles, activeId, scrollToBottom]);
 
   const cancel = useCallback(() => {
     if (!activeId) return;
@@ -349,6 +412,23 @@ function App() {
 
           {/* 输入区 */}
           <div className="input-area">
+            <input
+              type="file"
+              ref={fileInputRef}
+              style={{ display: 'none' }}
+              multiple
+              onChange={onFileChange}
+            />
+            {attachedFiles.length > 0 && (
+              <div className="attach-list">
+                {attachedFiles.map((f, i) => (
+                  <span key={i} className="attach-tag">
+                    {f.name}
+                    <span className="attach-tag-remove" onClick={() => setAttachedFiles(prev => prev.filter((_, j) => j !== i))}>×</span>
+                  </span>
+                ))}
+              </div>
+            )}
             <textarea
               value={input}
               onChange={e => setInput(e.target.value)}
@@ -363,13 +443,21 @@ function App() {
               disabled={!activeSession || activeSession.status !== 'waiting'}
             />
             <div className="btn-row">
+              <button
+                className="btn btn-attach"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={!activeSession || activeSession.status !== 'waiting'}
+                title="附加文件"
+              >
+                📎
+              </button>
               <button className="btn btn-cancel" onClick={cancel} disabled={!activeSession}>
                 结束会话
               </button>
               <button
                 className="btn btn-send"
                 onClick={send}
-                disabled={!activeSession || activeSession.status !== 'waiting' || !input.trim()}
+                disabled={!activeSession || activeSession.status !== 'waiting' || (!input.trim() && attachedFiles.length === 0)}
               >
                 发送
               </button>

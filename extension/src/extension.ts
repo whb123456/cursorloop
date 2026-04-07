@@ -87,6 +87,27 @@ class CursorLoopProvider implements vscode.WebviewViewProvider {
         writeResponse(sessionId, { message: content });
         this._post({ type: 'sent', sessionId });
 
+      } else if (type === 'sendWithFiles') {
+        const content: string = msg.message?.trim() || '';
+        const attachments = (msg.files || []).map((f: { kind: string; name: string; content?: string; mimeType?: string }) => {
+          if (f.kind === 'image' && f.content && f.mimeType) {
+            return { type: 'image', name: f.name, mimeType: f.mimeType, data: f.content };
+          } else if (f.kind === 'pdf' && f.content) {
+            return { type: 'pdf', name: f.name, mimeType: 'application/pdf', data: f.content };
+          } else if (f.kind === 'text' && f.content) {
+            return { type: 'text', name: f.name, data: f.content };
+          }
+          return { type: 'binary', name: f.name };
+        });
+        const historyContent = content
+          + (attachments.length ? `\n[附件: ${attachments.map((a: { name: string }) => a.name).join(', ')}]` : '');
+        if (session) {
+          session.history.push({ role: 'user', content: historyContent, timestamp: Date.now() });
+          session.status = 'processing';
+        }
+        writeResponse(sessionId, { message: content, attachments });
+        this._post({ type: 'sent', sessionId });
+
       } else if (type === 'cancel') {
         writeResponse(sessionId, { cancelled: true });
         if (session) session.status = 'cancelled';
