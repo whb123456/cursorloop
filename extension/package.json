@@ -1,0 +1,66 @@
+{
+  "name": "cursorloop",
+  "displayName": "CursorLoop",
+  "description": "让 Cursor AI 保持持续对话，面板发消息，历史不丢失",
+  "version": "2.1.0",
+  "publisher": "cursorloop",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-username/cursorloop"
+  },
+  "engines": { "vscode": "^1.80.0" },
+  "categories": ["Other"],
+  "keywords": ["cursor", "ai", "mcp", "chat", "loop"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "cursorloopContainer",
+          "title": "CursorLoop",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "cursorloopContainer": [
+        {
+          "type": "webview",
+          "id": "cursorloopPanel.view",
+          "name": "发消息给 AI"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "cursorloopPanel.focus",
+        "title": "CursorLoop: 打开面板"
+      },
+      {
+        "command": "cursorLoop.setup",
+        "title": "CursorLoop: 重新安装配置"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "npm run build:server && npm run build:ext && npm run build:webview",
+    "build:server": "esbuild ../mcp-server/index.mjs --bundle --outfile=mcp-server/index.mjs --platform=node --format=esm --banner:js='#!/usr/bin/env node'",
+    "build:ext": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --minify",
+    "build:webview": "esbuild src/webview.tsx --bundle --outfile=dist/webview.js --format=iife --platform=browser --minify",
+    "package": "npm run build && vsce package --no-dependencies",
+    "watch": "npm run build:ext -- --watch"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "@types/vscode": "^1.80.0",
+    "@vscode/vsce": "^2.24.0",
+    "esbuild": "^0.20.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "typescript": "^5.0.0"
+  }
+}

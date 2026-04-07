@@ -1,0 +1,9 @@
+.vscode/**
+.idea/**
+src/**
+node_modules/**
+*.ts
+*.tsx
+tsconfig.json
+.eslintrc*
+**/*.map

@@ -1,0 +1,8 @@
+node_modules/
+dist/
+mcp-server/index.mjs
+*.vsix
+.DS_Store
+floatpanel/
+resumeplugin/
+cursor-rules.md

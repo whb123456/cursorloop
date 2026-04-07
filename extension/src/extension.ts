@@ -1,0 +1,277 @@
+import * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
+
+const DATA_ROOT = path.join(os.homedir(), '.cursorloop-mcp');
+const MCP_SERVER_DST = path.join(DATA_ROOT, 'index.mjs');
+const MCP_CONFIG_PATH = path.join(os.homedir(), '.cursor', 'mcp.json');
+const RULES_DIR = path.join(os.homedir(), '.cursor', 'rules');
+const RULE_FILE = path.join(RULES_DIR, 'cursorloop.mdc');
+
+// ─── 类型 ────────────────────────────────────────────────────────────────────
+
+interface ChatMessage {
+  role: 'user' | 'ai';
+  content: string;
+  timestamp: number;
+}
+
+interface Session {
+  sessionId: string;
+  title: string;
+  status: 'waiting' | 'processing' | 'cancelled';
+  history: ChatMessage[];
+  draft: string;
+}
+
+type NewRequestPayload = {
+  sessionId: string;
+  title: string;
+  lastResponse: string;
+  status: string;
+  history: ChatMessage[];
+};
+
+// ─── 工具函数 ────────────────────────────────────────────────────────────────
+
+function ensureDir(dir: string) {
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+}
+
+function responseFile(sid: string): string {
+  return path.join(DATA_ROOT, `response-${sid}.json`);
+}
+
+function writeResponse(sid: string, data: unknown) {
+  ensureDir(DATA_ROOT);
+  const file = responseFile(sid);
+  const tmp = file + '.tmp';
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(data), 'utf-8');
+    fs.renameSync(tmp, file);
+  } catch {
+    try { fs.writeFileSync(file, JSON.stringify(data), 'utf-8'); } catch { }
+  }
+}
+
+// ─── Webview Provider ────────────────────────────────────────────────────────
+
+class CursorLoopProvider implements vscode.WebviewViewProvider {
+  private _view?: vscode.WebviewView;
+  private _pending: NewRequestPayload[] = [];
+  private _sessions = new Map<string, Session>();
+
+  constructor(private readonly _extensionUri: vscode.Uri) {}
+
+  resolveWebviewView(view: vscode.WebviewView) {
+    this._view = view;
+    view.webview.options = {
+      enableScripts: true,
+      localResourceRoots: [this._extensionUri],
+    };
+    view.webview.html = this._getHtml(view.webview);
+
+    view.webview.onDidReceiveMessage(msg => {
+      const { type, sessionId } = msg;
+      if (!sessionId) return;
+      const session = this._sessions.get(sessionId);
+
+      if (type === 'send') {
+        const content: string = msg.message?.trim();
+        if (!content) return;
+        if (session) {
+          session.history.push({ role: 'user', content, timestamp: Date.now() });
+          session.status = 'processing';
+        }
+        writeResponse(sessionId, { message: content });
+        this._post({ type: 'sent', sessionId });
+
+      } else if (type === 'cancel') {
+        writeResponse(sessionId, { cancelled: true });
+        if (session) session.status = 'cancelled';
+        this._post({ type: 'cancelled', sessionId });
+
+      } else if (type === 'reconnect') {
+        vscode.commands.executeCommand('composer.resumeCurrentChat').then(
+          () => {},
+          () => vscode.commands.executeCommand('composer.startComposerPrompt')
+        );
+      }
+    });
+
+    if (this._pending.length > 0) {
+      setTimeout(() => {
+        for (const req of this._pending) this._post({ type: 'newRequest', ...req });
+        this._pending = [];
+      }, 300);
+    }
+  }
+
+  newRequest(sessionId: string, title: string, lastResponse: string) {
+    let session = this._sessions.get(sessionId);
+    if (!session) {
+      session = { sessionId, title, status: 'waiting', history: [], draft: '' };
+      this._sessions.set(sessionId, session);
+    } else {
+      session.title = title;
+    }
+
+    // 把 AI 的上次回复追加到历史
+    if (lastResponse?.trim()) {
+      const last = session.history[session.history.length - 1];
+      if (!last || last.role !== 'ai' || last.content !== lastResponse) {
+        session.history.push({ role: 'ai', content: lastResponse, timestamp: Date.now() });
+      }
+    }
+    session.status = 'waiting';
+
+    const payload: NewRequestPayload = {
+      sessionId,
+      title,
+      lastResponse,
+      status: 'waiting',
+      history: [...session.history],
+    };
+
+    vscode.commands.executeCommand('cursorloopPanel.view.focus');
+    if (this._view) {
+      this._post({ type: 'newRequest', ...payload });
+    } else {
+      const idx = this._pending.findIndex(r => r.sessionId === sessionId);
+      if (idx >= 0) this._pending[idx] = payload;
+      else this._pending.push(payload);
+    }
+  }
+
+  private _post(msg: unknown) {
+    this._view?.webview.postMessage(msg);
+  }
+
+  private _getHtml(webview: vscode.Webview): string {
+    const scriptUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(this._extensionUri, 'dist', 'webview.js')
+    );
+    return `<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src ${webview.cspSource}; style-src 'unsafe-inline';">
+</head>
+<body style="margin:0;padding:0;height:100vh;overflow:hidden;">
+  <div id="root"></div>
+  <script src="${scriptUri}"></script>
+</body>
+</html>`;
+  }
+}
+
+// ─── 自动安装 ────────────────────────────────────────────────────────────────
+
+function setup(context: vscode.ExtensionContext) {
+  ensureDir(DATA_ROOT);
+
+  // 1. 把扩展内打包的 MCP server 复制到 ~/.cursorloop-mcp/
+  const bundled = path.join(context.extensionPath, 'mcp-server', 'index.mjs');
+  if (fs.existsSync(bundled)) {
+    fs.copyFileSync(bundled, MCP_SERVER_DST);
+  }
+
+  // 2. 写入 ~/.cursor/mcp.json
+  let mcpConfig: Record<string, unknown> = {};
+  try {
+    if (fs.existsSync(MCP_CONFIG_PATH)) {
+      mcpConfig = JSON.parse(fs.readFileSync(MCP_CONFIG_PATH, 'utf-8'));
+    }
+  } catch { }
+  if (!mcpConfig.mcpServers) mcpConfig.mcpServers = {};
+  (mcpConfig.mcpServers as Record<string, unknown>)['CursorLoop'] = {
+    command: 'node',
+    args: [MCP_SERVER_DST],
+    timeoutMs: 86400000,
+  };
+  ensureDir(path.dirname(MCP_CONFIG_PATH));
+  fs.writeFileSync(MCP_CONFIG_PATH, JSON.stringify(mcpConfig, null, 2), 'utf-8');
+
+  // 3. 写入 ~/.cursor/rules/cursorloop.mdc
+  ensureDir(RULES_DIR);
+  const rule = `---
+description: CursorLoop 持续对话循环规则
+globs:
+alwaysApply: true
+---
+
+你有一个叫 check_messages 的 MCP 工具。
+
+规则：
+1. 每次你输出完回复之后，无论什么情况，必须立刻调用一次 check_messages 工具，然后根据工具返回的内容处理：
+   - status 为 "message"：根据 message 字段内容回复用户，然后再次调用 check_messages
+   - status 为 "still_waiting"：不要输出任何文字，直接再次调用 check_messages(session_id=上次的id)
+   - status 为 "cancelled"：停止调用
+2. 调用 check_messages 时传以下参数：
+   - session_id：第一次调用时不传，之后每次传上次返回的 session_id。
+   - last_response：你刚才回复内容的简短摘要（用于面板展示）。
+3. 不允许用文字告诉用户"我要调用工具了"，直接调用。
+4. 除非用户明确说结束对话，否则永远不要停止循环。
+`;
+  fs.writeFileSync(RULE_FILE, rule, 'utf-8');
+}
+
+// ─── 激活入口 ────────────────────────────────────────────────────────────────
+
+export function activate(context: vscode.ExtensionContext) {
+  ensureDir(DATA_ROOT);
+  setup(context);
+
+  const provider = new CursorLoopProvider(context.extensionUri);
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider('cursorloopPanel.view', provider, {
+      webviewOptions: { retainContextWhenHidden: true },
+    })
+  );
+
+  // 轮询 request-*.json 文件
+  const poll = setInterval(() => {
+    let files: string[];
+    try { files = fs.readdirSync(DATA_ROOT); } catch { return; }
+
+    for (const file of files) {
+      if (!file.startsWith('request-') || !file.endsWith('.json')) continue;
+      const src = path.join(DATA_ROOT, file);
+      const claimed = src + '.claimed';
+      try { fs.renameSync(src, claimed); } catch { continue; }
+      try {
+        const raw = fs.readFileSync(claimed, 'utf-8').trim();
+        fs.unlinkSync(claimed);
+        if (!raw) continue;
+        const data = JSON.parse(raw);
+        provider.newRequest(
+          data.session_id || file.replace('request-', '').replace('.json', ''),
+          data.title || '新会话',
+          data.last_response || '',
+        );
+      } catch {
+        try { fs.unlinkSync(claimed); } catch { }
+      }
+    }
+  }, 300);
+  context.subscriptions.push({ dispose: () => clearInterval(poll) });
+
+  // 命令
+  context.subscriptions.push(
+    vscode.commands.registerCommand('cursorloopPanel.focus', () => {
+      vscode.commands.executeCommand('cursorloopPanel.view.focus');
+    }),
+    vscode.commands.registerCommand('cursorLoop.setup', () => {
+      setup(context);
+      vscode.window.showInformationMessage(
+        'CursorLoop 配置已更新，请重启 Cursor 生效',
+        '立即重启'
+      ).then(c => { if (c) vscode.commands.executeCommand('workbench.action.reloadWindow'); });
+    })
+  );
+
+  setTimeout(() => vscode.commands.executeCommand('cursorloopPanel.view.focus'), 1500);
+}
+
+export function deactivate() {}
