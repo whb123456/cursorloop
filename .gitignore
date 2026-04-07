@@ -1,6 +1,7 @@
 node_modules/
 dist/
-mcp-server/index.mjs
+extension/mcp-server/
+extension/dist/
 *.vsix
 .DS_Store
 floatpanel/
