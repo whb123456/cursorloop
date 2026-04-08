@@ -109,6 +109,17 @@ class CursorLoopProvider implements vscode.WebviewViewProvider {
         writeResponse(sessionId, { message: content, attachments });
         this._post({ type: 'sent', sessionId });
 
+      } else if (type === 'readFile') {
+        // webview 请求读取本地文件（来自 Ctrl+V 文件路径粘贴）
+        const filePath: string = msg.path;
+        if (!filePath) return;
+        try {
+          const content = fs.readFileSync(filePath, 'utf-8');
+          this._post({ type: 'fileContent', name: path.basename(filePath), content });
+        } catch {
+          this._post({ type: 'fileContentError', name: path.basename(filePath) });
+        }
+
       } else if (type === 'cancel') {
         writeResponse(sessionId, { cancelled: true });
         if (session) session.status = 'cancelled';

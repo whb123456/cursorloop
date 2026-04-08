@@ -231,6 +231,11 @@ function App() {
     const handler = (e: MessageEvent) => {
       const msg = e.data;
 
+      if (msg.type === 'fileContent') {
+        setAttachedFiles(prev => [...prev, { kind: 'text', name: msg.name, content: msg.content }]);
+        return;
+      }
+
       if (msg.type === 'newRequest') {
         const { sessionId, title, lastResponse, status, history } = msg;
         setSessions(prev => {
@@ -340,10 +345,21 @@ function App() {
   }, [activeSession, addFiles]);
 
   const onPaste = useCallback(async (e: React.ClipboardEvent) => {
+    // 优先处理 File 对象（外部文件、截图等）
     const files = Array.from(e.clipboardData.files);
-    if (!files.length) return;
-    e.preventDefault();
-    await addFiles(files);
+    if (files.length) {
+      e.preventDefault();
+      await addFiles(files);
+      return;
+    }
+    // 检测是否是文件路径（Cursor 文件树 Ctrl+C 复制的文件）
+    const text = e.clipboardData.getData('text/plain').trim();
+    if (text && /^(\/|[A-Za-z]:\\)/.test(text) && !text.includes('\n')) {
+      e.preventDefault();
+      vscode.postMessage({ type: 'readFile', path: text });
+      return;
+    }
+    // 其他情况：正常文本粘贴，不拦截
   }, [addFiles]);
 
   const send = useCallback(() => {

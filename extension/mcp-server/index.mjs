@@ -20852,7 +20852,7 @@ import os from "os";
 var DATA_ROOT = path.join(os.homedir(), ".cursorloop-mcp");
 var POLL_INTERVAL_MS = 500;
 var HEARTBEAT_INTERVAL_MS = 2e4;
-var MAX_WAIT_MS = 10 * 60 * 1e3;
+var MAX_WAIT_MS = 4 * 60 * 60 * 1e3;
 function ensureDir(dir) {
   if (!fs.existsSync(dir))
     fs.mkdirSync(dir, { recursive: true });
@@ -20867,7 +20867,9 @@ function newSessionId() {
   return `s-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 function sessionTitle() {
-  const ws = path.basename(process.cwd());
+  const cwd = process.cwd();
+  const base = path.basename(cwd);
+  const ws = cwd === os.homedir() || base === ".cursorloop-mcp" ? "CursorLoop" : base;
   const now = /* @__PURE__ */ new Date();
   const hm = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
   return `${ws} ${hm}`;
