@@ -45,8 +45,15 @@ const css = `
     font-size: var(--vscode-font-size);
     color: var(--vscode-foreground);
     background: var(--vscode-sideBar-background);
+  }
+  #root {
     display: flex;
     flex-direction: column;
+  }
+  .chat-body {
+    position: relative;
+    flex: 1;
+    overflow: hidden;
   }
   .tab-bar {
     display: flex;
@@ -101,7 +108,10 @@ const css = `
   .status-dot.processing { background: #89b4fa; }
 
   .messages {
-    flex: 1; min-height: 0; overflow-y: auto; padding: 10px 12px;
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    overflow-y: scroll;
+    padding: 10px 12px 10px;
     display: flex; flex-direction: column; gap: 8px;
   }
   .msg { display: flex; flex-direction: column; gap: 2px; max-width: 90%; }
@@ -125,7 +135,9 @@ const css = `
   .msg-time { font-size: 10px; color: var(--vscode-descriptionForeground); padding: 0 2px; }
 
   .empty {
-    flex: 1; display: flex; flex-direction: column;
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    display: flex; flex-direction: column;
     align-items: center; justify-content: center;
     gap: 12px; padding: 24px; text-align: center;
     color: var(--vscode-descriptionForeground);
@@ -141,7 +153,9 @@ const css = `
 
   .input-area {
     padding: 8px 12px; border-top: 1px solid var(--vscode-panel-border);
-    display: flex; flex-direction: column; gap: 6px; flex-shrink: 0;
+    display: flex; flex-direction: column; gap: 6px;
+    flex-shrink: 0;
+    background: var(--vscode-sideBar-background);
   }
   textarea {
     width: 100%; resize: none; min-height: 58px; max-height: 120px;
@@ -385,34 +399,38 @@ function App() {
 
       {/* 主体 */}
       {sessionList.length === 0 ? (
-        <div className="empty">
-          <div className="empty-title">等待 AI 连接</div>
-          <div className="empty-desc">
-            在 Cursor Composer（Agent 模式）中<br />
-            让 AI 调用 check_messages 即可建立连接
+        <div className="chat-body">
+          <div className="empty">
+            <div className="empty-title">等待 AI 连接</div>
+            <div className="empty-desc">
+              在 Cursor Composer（Agent 模式）中<br />
+              让 AI 调用 check_messages 即可建立连接
+            </div>
+            <button className="reconnect-btn" onClick={() => vscode.postMessage({ type: 'reconnect', sessionId: '' })}>
+              打开 Composer
+            </button>
           </div>
-          <button className="reconnect-btn" onClick={() => vscode.postMessage({ type: 'reconnect', sessionId: '' })}>
-            打开 Composer
-          </button>
         </div>
       ) : (
         <>
-          {/* 消息历史 */}
-          <div className="messages" ref={messagesRef}>
-            {activeSession?.history.length === 0 && (
-              <div style={{ textAlign: 'center', fontSize: 11, color: 'var(--vscode-descriptionForeground)', marginTop: 16 }}>
-                会话已连接，发送消息开始对话
-              </div>
-            )}
-            {activeSession?.history.map((m, i) => (
-              <div key={i} className={`msg ${m.role}`}>
-                <div className="msg-bubble">{m.content}</div>
-                <div className="msg-time">{fmtTime(m.timestamp)}</div>
-              </div>
-            ))}
+          {/* 消息历史 — 独立滚动区 */}
+          <div className="chat-body">
+            <div className="messages" ref={messagesRef}>
+              {activeSession?.history.length === 0 && (
+                <div style={{ textAlign: 'center', fontSize: 11, color: 'var(--vscode-descriptionForeground)', marginTop: 16 }}>
+                  会话已连接，发送消息开始对话
+                </div>
+              )}
+              {activeSession?.history.map((m, i) => (
+                <div key={i} className={`msg ${m.role}`}>
+                  <div className="msg-bubble">{m.content}</div>
+                  <div className="msg-time">{fmtTime(m.timestamp)}</div>
+                </div>
+              ))}
+            </div>
           </div>
 
-          {/* 输入区 */}
+          {/* 输入区 — 独立固定在底部 */}
           <div className="input-area">
             <input
               type="file"
