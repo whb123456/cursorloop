@@ -344,14 +344,15 @@ function App() {
     setSessions(prev => {
       const next = new Map(prev);
       next.delete(sid);
+      // 在同一次渲染批处理中更新 activeId，使用 prev（已删除后的 Map）
+      setActiveId(id => {
+        if (id !== sid) return id;
+        const remaining = [...next.keys()];
+        return remaining[remaining.length - 1] ?? null;
+      });
       return next;
     });
-    setActiveId(id => {
-      if (id !== sid) return id;
-      const remaining = [...sessions.keys()].filter(k => k !== sid);
-      return remaining[remaining.length - 1] ?? null;
-    });
-  }, [sessions]);
+  }, []);
 
   const onKeyDown = (e: React.KeyboardEvent) => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {

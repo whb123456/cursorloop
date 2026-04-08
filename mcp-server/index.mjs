@@ -8,7 +8,7 @@ import os from 'os';
 const DATA_ROOT = path.join(os.homedir(), '.cursorloop-mcp');
 const POLL_INTERVAL_MS = 500;
 const HEARTBEAT_INTERVAL_MS = 20000;
-const MAX_WAIT_MS = 90 * 1000; // 每次最多等 90 秒，超时返回 still_waiting 让 AI 继续调
+const MAX_WAIT_MS = 4 * 60 * 60 * 1000; // 等待 4 小时，适配长时间挂起场景
 
 function ensureDir(dir) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -27,7 +27,10 @@ function newSessionId() {
 }
 
 function sessionTitle() {
-  const ws = path.basename(process.cwd());
+  const cwd = process.cwd();
+  const base = path.basename(cwd);
+  // cwd 可能是 home 或 MCP 数据目录，这种情况用通用标题
+  const ws = (cwd === os.homedir() || base === '.cursorloop-mcp') ? 'CursorLoop' : base;
   const now = new Date();
   const hm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
   return `${ws} ${hm}`;
@@ -101,7 +104,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   let nextHeartbeat = Date.now() + HEARTBEAT_INTERVAL_MS;
 
   while (true) {
-    // 超过 90 秒还没消息，返回 still_waiting 让 AI 继续调
+    // 超过 MAX_WAIT_MS（10 分钟）还没消息，返回 still_waiting 让 AI 继续调
     if (Date.now() - startTime > MAX_WAIT_MS) {
       return {
         content: [{ type: 'text', text: JSON.stringify({ session_id: sid, status: 'still_waiting', message: '暂无新消息，继续等待中。请立刻再次调用 check_messages(session_id="' + sid + '") 保持连接。' }) }],

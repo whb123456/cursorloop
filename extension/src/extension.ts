@@ -23,6 +23,7 @@ interface Session {
   status: 'waiting' | 'processing' | 'cancelled';
   history: ChatMessage[];
   draft: string;
+  lastAiContent: string;
 }
 
 type NewRequestPayload = {
@@ -133,18 +134,16 @@ class CursorLoopProvider implements vscode.WebviewViewProvider {
     const isNew = !this._sessions.has(sessionId);
     let session = this._sessions.get(sessionId);
     if (!session) {
-      session = { sessionId, title, status: 'waiting', history: [], draft: '' };
+      session = { sessionId, title, status: 'waiting', history: [], draft: '', lastAiContent: '' };
       this._sessions.set(sessionId, session);
     } else {
       session.title = title;
     }
 
-    // 把 AI 的上次回复追加到历史
-    if (lastResponse?.trim()) {
-      const last = session.history[session.history.length - 1];
-      if (!last || last.role !== 'ai' || last.content !== lastResponse) {
-        session.history.push({ role: 'ai', content: lastResponse, timestamp: Date.now() });
-      }
+    // 把 AI 的上次回复追加到历史（仅当内容有变化时，避免 still_waiting 续轮重复追加）
+    if (lastResponse?.trim() && lastResponse !== session.lastAiContent) {
+      session.history.push({ role: 'ai', content: lastResponse, timestamp: Date.now() });
+      session.lastAiContent = lastResponse;
     }
     session.status = 'waiting';
 
@@ -248,6 +247,21 @@ export function activate(context: vscode.ExtensionContext) {
   ensureDir(DATA_ROOT);
   setup(context);
 
+  // 启动时只清理超过 2 小时的残留文件，避免误删其他窗口正在使用的文件
+  try {
+    const TWO_HOURS = 2 * 60 * 60 * 1000;
+    const now = Date.now();
+    for (const f of fs.readdirSync(DATA_ROOT)) {
+      if ((f.startsWith('request-') && f.endsWith('.json')) || f.endsWith('.claimed')) {
+        const filePath = path.join(DATA_ROOT, f);
+        try {
+          const stat = fs.statSync(filePath);
+          if (now - stat.mtimeMs > TWO_HOURS) fs.unlinkSync(filePath);
+        } catch { /* ignore */ }
+      }
+    }
+  } catch { /* ignore */ }
+
   const provider = new CursorLoopProvider(context.extensionUri);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider('cursorloopPanel.view', provider, {
@@ -276,12 +290,21 @@ export function activate(context: vscode.ExtensionContext) {
     }
   };
 
-  // 用 fs.watch 替代轮询，有文件写入才触发
+  // fs.watch 监听文件变化（主触发方式）
   ensureDir(DATA_ROOT);
   const watcher = fs.watch(DATA_ROOT, (_event, filename) => {
     if (filename) handleRequestFile(filename);
   });
   context.subscriptions.push({ dispose: () => watcher.close() });
+
+  // 低频 fallback 轮询：macOS kqueue 可能丢事件，5 秒扫一次兜底
+  const fallbackTimer = setInterval(() => {
+    try {
+      const files = fs.readdirSync(DATA_ROOT);
+      for (const f of files) handleRequestFile(f);
+    } catch { /* ignore */ }
+  }, 5000);
+  context.subscriptions.push({ dispose: () => clearInterval(fallbackTimer) });
 
   // 命令
   context.subscriptions.push(
@@ -297,7 +320,12 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
-  setTimeout(() => vscode.commands.executeCommand('cursorloopPanel.view.focus'), 1500);
+  // 仅首次安装后自动 focus，后续 activate 不打断用户
+  const hasShownKey = 'cursorloop.hasShownPanel';
+  if (!context.globalState.get<boolean>(hasShownKey)) {
+    context.globalState.update(hasShownKey, true);
+    setTimeout(() => vscode.commands.executeCommand('cursorloopPanel.view.focus'), 1500);
+  }
 }
 
 export function deactivate() {}
