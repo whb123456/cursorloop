@@ -20943,15 +20943,33 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         return { content: [{ type: "text", text: JSON.stringify({ session_id: sid, status: "cancelled" }) }] };
       }
       const msg = resp.message || "";
-      const result = {
+      const meta3 = {
         session_id: sid,
         status: "message",
         message: msg,
         next_action: `\u56DE\u590D\u7528\u6237\u540E\uFF0C\u7ACB\u523B\u8C03\u7528 check_messages(session_id="${sid}", last_response="<\u4F60\u7684\u56DE\u590D\u6458\u8981>")`
       };
-      if (resp.attachments?.length)
-        result.attachments = resp.attachments;
-      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+      const content = [{ type: "text", text: JSON.stringify(meta3) }];
+      for (const att of resp.attachments || []) {
+        if (att.type === "image" && att.data && att.mimeType) {
+          content.push({ type: "image", data: att.data, mimeType: att.mimeType });
+        } else if (att.type === "pdf" && att.data) {
+          content.push({
+            type: "resource",
+            resource: {
+              uri: `file://${att.name}`,
+              mimeType: "application/pdf",
+              blob: att.data
+            }
+          });
+        } else if (att.type === "text" && att.data) {
+          content.push({ type: "text", text: `
+--- \u9644\u4EF6: ${att.name} ---
+${att.data}
+--- \u9644\u4EF6\u7ED3\u675F ---` });
+        }
+      }
+      return { content };
     }
     if (Date.now() >= nextHeartbeat) {
       if (progressToken !== void 0) {

@@ -36,15 +36,17 @@ interface Session {
 
 const css = `
   * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body, #root {
+    height: 100%;
+    overflow: hidden;
+  }
   body {
     font-family: var(--vscode-font-family);
     font-size: var(--vscode-font-size);
     color: var(--vscode-foreground);
     background: var(--vscode-sideBar-background);
-    height: 100vh;
     display: flex;
     flex-direction: column;
-    overflow: hidden;
   }
   .tab-bar {
     display: flex;
@@ -99,7 +101,7 @@ const css = `
   .status-dot.processing { background: #89b4fa; }
 
   .messages {
-    flex: 1; overflow-y: auto; padding: 10px 12px;
+    flex: 1; min-height: 0; overflow-y: auto; padding: 10px 12px;
     display: flex; flex-direction: column; gap: 8px;
   }
   .msg { display: flex; flex-direction: column; gap: 2px; max-width: 90%; }
