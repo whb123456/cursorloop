@@ -130,6 +130,7 @@ class CursorLoopProvider implements vscode.WebviewViewProvider {
   }
 
   newRequest(sessionId: string, title: string, lastResponse: string) {
+    const isNew = !this._sessions.has(sessionId);
     let session = this._sessions.get(sessionId);
     if (!session) {
       session = { sessionId, title, status: 'waiting', history: [], draft: '' };
@@ -155,7 +156,10 @@ class CursorLoopProvider implements vscode.WebviewViewProvider {
       history: [...session.history],
     };
 
-    vscode.commands.executeCommand('cursorloopPanel.view.focus');
+    // 只有全新 session 才抢占焦点，续轮不打扰用户
+    if (isNew) {
+      vscode.commands.executeCommand('cursorloopPanel.view.focus');
+    }
     if (this._view) {
       this._post({ type: 'newRequest', ...payload });
     } else {
@@ -251,32 +255,33 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
-  // 轮询 request-*.json 文件
-  const poll = setInterval(() => {
-    let files: string[];
-    try { files = fs.readdirSync(DATA_ROOT); } catch { return; }
-
-    for (const file of files) {
-      if (!file.startsWith('request-') || !file.endsWith('.json')) continue;
-      const src = path.join(DATA_ROOT, file);
-      const claimed = src + '.claimed';
-      try { fs.renameSync(src, claimed); } catch { continue; }
-      try {
-        const raw = fs.readFileSync(claimed, 'utf-8').trim();
-        fs.unlinkSync(claimed);
-        if (!raw) continue;
-        const data = JSON.parse(raw);
-        provider.newRequest(
-          data.session_id || file.replace('request-', '').replace('.json', ''),
-          data.title || '新会话',
-          data.last_response || '',
-        );
-      } catch {
-        try { fs.unlinkSync(claimed); } catch { }
-      }
+  // 处理单个 request 文件
+  const handleRequestFile = (file: string) => {
+    if (!file.startsWith('request-') || !file.endsWith('.json')) return;
+    const src = path.join(DATA_ROOT, file);
+    const claimed = src + '.claimed';
+    try { fs.renameSync(src, claimed); } catch { return; }
+    try {
+      const raw = fs.readFileSync(claimed, 'utf-8').trim();
+      fs.unlinkSync(claimed);
+      if (!raw) return;
+      const data = JSON.parse(raw);
+      provider.newRequest(
+        data.session_id || file.replace('request-', '').replace('.json', ''),
+        data.title || '新会话',
+        data.last_response || '',
+      );
+    } catch {
+      try { fs.unlinkSync(claimed); } catch { }
     }
-  }, 300);
-  context.subscriptions.push({ dispose: () => clearInterval(poll) });
+  };
+
+  // 用 fs.watch 替代轮询，有文件写入才触发
+  ensureDir(DATA_ROOT);
+  const watcher = fs.watch(DATA_ROOT, (_event, filename) => {
+    if (filename) handleRequestFile(filename);
+  });
+  context.subscriptions.push({ dispose: () => watcher.close() });
 
   // 命令
   context.subscriptions.push(

@@ -20852,7 +20852,7 @@ import os from "os";
 var DATA_ROOT = path.join(os.homedir(), ".cursorloop-mcp");
 var POLL_INTERVAL_MS = 500;
 var HEARTBEAT_INTERVAL_MS = 2e4;
-var MAX_WAIT_MS = 90 * 1e3;
+var MAX_WAIT_MS = 10 * 60 * 1e3;
 function ensureDir(dir) {
   if (!fs.existsSync(dir))
     fs.mkdirSync(dir, { recursive: true });
