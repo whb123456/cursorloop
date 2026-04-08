@@ -2,7 +2,7 @@
   "name": "cursorloop",
   "displayName": "CursorLoop",
   "description": "让 Cursor AI 保持持续对话，面板发消息，历史不丢失",
-  "version": "2.1.5",
+  "version": "2.1.6",
   "publisher": "cursorloop",
   "license": "MIT",
   "repository": {
@@ -41,8 +41,20 @@
       {
         "command": "cursorLoop.setup",
         "title": "CursorLoop: 重新安装配置"
+      },
+      {
+        "command": "cursorLoop.addFileToInput",
+        "title": "Add to CursorLoop"
       }
-    ]
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "cursorLoop.addFileToInput",
+          "group": "cursorloop@1"
+        }
+      ]
+    }
   },
   "scripts": {
     "build": "npm run build:server && npm run build:ext && npm run build:webview",

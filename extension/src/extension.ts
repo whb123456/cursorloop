@@ -11,6 +11,13 @@ const RULE_FILE = path.join(RULES_DIR, 'cursorloop.mdc');
 
 // ─── 类型 ────────────────────────────────────────────────────────────────────
 
+interface AttachedFile {
+  kind: 'image' | 'pdf' | 'text' | 'binary';
+  name: string;
+  content?: string;
+  mimeType?: string;
+}
+
 interface ChatMessage {
   role: 'user' | 'ai';
   content: string;
@@ -35,6 +42,30 @@ type NewRequestPayload = {
 };
 
 // ─── 工具函数 ────────────────────────────────────────────────────────────────
+
+const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'ico', 'tiff']);
+const PDF_EXTS = new Set(['pdf']);
+const TEXT_EXTS = new Set(['md', 'txt', 'json', 'yaml', 'yml', 'js', 'ts', 'tsx', 'jsx', 'py', 'java', 'c', 'cpp', 'h', 'cs', 'go', 'rs', 'swift', 'kt', 'rb', 'php', 'html', 'css', 'xml', 'sh', 'bash', 'toml', 'ini', 'env', 'sql', 'vue', 'svelte']);
+
+function readFileAsAttachment(filePath: string): AttachedFile {
+  const ext = path.extname(filePath).slice(1).toLowerCase();
+  const name = path.basename(filePath);
+  try {
+    if (IMAGE_EXTS.has(ext)) {
+      const data = fs.readFileSync(filePath);
+      const mimeMap: Record<string, string> = { svg: 'image/svg+xml', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp', ico: 'image/x-icon', tiff: 'image/tiff' };
+      return { kind: 'image', name, content: data.toString('base64'), mimeType: mimeMap[ext] || `image/${ext}` };
+    }
+    if (PDF_EXTS.has(ext)) {
+      const data = fs.readFileSync(filePath);
+      return { kind: 'pdf', name, content: data.toString('base64'), mimeType: 'application/pdf' };
+    }
+    // 文本类型和未知类型都尝试作为文本读取
+    return { kind: 'text', name, content: fs.readFileSync(filePath, 'utf-8') };
+  } catch {
+    return { kind: 'binary', name };
+  }
+}
 
 function ensureDir(dir: string) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -62,6 +93,7 @@ class CursorLoopProvider implements vscode.WebviewViewProvider {
   private _view?: vscode.WebviewView;
   private _pending: NewRequestPayload[] = [];
   private _sessions = new Map<string, Session>();
+  private _activeSessionId: string | null = null;
 
   constructor(private readonly _extensionUri: vscode.Uri) {}
 
@@ -75,8 +107,8 @@ class CursorLoopProvider implements vscode.WebviewViewProvider {
 
     view.webview.onDidReceiveMessage(msg => {
       const { type, sessionId } = msg;
-      if (!sessionId) return;
-      const session = this._sessions.get(sessionId);
+      if (!sessionId && type !== 'readFile' && type !== 'reconnect') return;
+      const session = sessionId ? this._sessions.get(sessionId) : undefined;
 
       if (type === 'send') {
         const content: string = msg.message?.trim();
@@ -108,6 +140,9 @@ class CursorLoopProvider implements vscode.WebviewViewProvider {
         }
         writeResponse(sessionId, { message: content, attachments });
         this._post({ type: 'sent', sessionId });
+
+      } else if (type === 'setActive') {
+        this._activeSessionId = sessionId;
 
       } else if (type === 'readFile') {
         // webview 请求读取本地文件（来自 Ctrl+V 文件路径粘贴）
@@ -168,6 +203,7 @@ class CursorLoopProvider implements vscode.WebviewViewProvider {
 
     // 只有全新 session 才抢占焦点，续轮不打扰用户
     if (isNew) {
+      this._activeSessionId = sessionId;
       vscode.commands.executeCommand('cursorloopPanel.view.focus');
     }
     if (this._view) {
@@ -177,6 +213,18 @@ class CursorLoopProvider implements vscode.WebviewViewProvider {
       if (idx >= 0) this._pending[idx] = payload;
       else this._pending.push(payload);
     }
+  }
+
+  getSessions(): Session[] {
+    return [...this._sessions.values()];
+  }
+
+  getActiveSessionId(): string | null {
+    return this._activeSessionId;
+  }
+
+  addFilesToSession(sessionId: string, files: AttachedFile[]) {
+    this._post({ type: 'addFilesToSession', sessionId, files });
   }
 
   private _post(msg: unknown) {
@@ -328,6 +376,47 @@ export function activate(context: vscode.ExtensionContext) {
         'CursorLoop 配置已更新，请重启 Cursor 生效',
         '立即重启'
       ).then(c => { if (c) vscode.commands.executeCommand('workbench.action.reloadWindow'); });
+    }),
+    vscode.commands.registerCommand('cursorLoop.addFileToInput', async (uri: vscode.Uri, allUris?: vscode.Uri[]) => {
+      const uris = (allUris && allUris.length > 0) ? allUris : (uri ? [uri] : []);
+      if (uris.length === 0) return;
+
+      const sessions = provider.getSessions();
+      if (sessions.length === 0) {
+        vscode.window.showInformationMessage('CursorLoop 还没有活跃的会话，请先让 AI 调用 check_messages 建立连接。');
+        return;
+      }
+
+      // 确定目标 session
+      let targetSessionId: string | null = null;
+      if (sessions.length === 1) {
+        targetSessionId = sessions[0].sessionId;
+      } else {
+        // 多 tab：弹出选择器，默认高亮当前活跃的 tab
+        const activeId = provider.getActiveSessionId();
+        const items = sessions.map(s => ({
+          label: s.title,
+          description: s.status === 'waiting' ? '等待输入' : s.status === 'processing' ? 'AI 处理中' : '已结束',
+          sessionId: s.sessionId,
+          picked: s.sessionId === activeId,
+        }));
+        const picked = await vscode.window.showQuickPick(items, {
+          title: '选择要添加文件的会话',
+          placeHolder: '选择目标 CursorLoop 会话',
+        });
+        if (!picked) return;
+        targetSessionId = picked.sessionId;
+      }
+
+      // 读取文件内容
+      const files: AttachedFile[] = [];
+      for (const u of uris) {
+        files.push(readFileAsAttachment(u.fsPath));
+      }
+
+      // 确保面板可见并发送文件
+      await vscode.commands.executeCommand('cursorloopPanel.view.focus');
+      provider.addFilesToSession(targetSessionId, files);
     })
   );
 

@@ -236,6 +236,12 @@ function App() {
         return;
       }
 
+      if (msg.type === 'addFilesToSession') {
+        setActiveId(msg.sessionId);
+        setAttachedFiles(prev => [...prev, ...(msg.files as AttachedFile[])]);
+        return;
+      }
+
       if (msg.type === 'newRequest') {
         const { sessionId, title, lastResponse, status, history } = msg;
         setSessions(prev => {
@@ -399,7 +405,6 @@ function App() {
     setSessions(prev => {
       const next = new Map(prev);
       next.delete(sid);
-      // 在同一次渲染批处理中更新 activeId，使用 prev（已删除后的 Map）
       setActiveId(id => {
         if (id !== sid) return id;
         const remaining = [...next.keys()];
@@ -429,7 +434,10 @@ function App() {
             <div
               key={s.sessionId}
               className={`tab${s.sessionId === activeId ? ' active' : ''}`}
-              onClick={() => setActiveId(s.sessionId)}
+              onClick={() => {
+                setActiveId(s.sessionId);
+                vscode.postMessage({ type: 'setActive', sessionId: s.sessionId });
+              }}
             >
               <div className={`tab-dot ${s.status}`} />
               <span className="tab-title">{s.title}</span>
