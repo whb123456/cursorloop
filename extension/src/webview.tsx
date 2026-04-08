@@ -156,6 +156,11 @@ const css = `
     display: flex; flex-direction: column; gap: 6px;
     flex-shrink: 0;
     background: var(--vscode-sideBar-background);
+    transition: background .15s;
+  }
+  .input-area.dragging {
+    background: var(--vscode-list-hoverBackground);
+    border-top: 1px solid var(--vscode-focusBorder);
   }
   textarea {
     width: 100%; resize: none; min-height: 58px; max-height: 120px;
@@ -307,6 +312,40 @@ function App() {
     e.target.value = '';
   }, [readFileAsAttachment]);
 
+  const addFiles = useCallback(async (files: File[]) => {
+    if (!files.length) return;
+    const attachments = await Promise.all(files.map(readFileAsAttachment));
+    setAttachedFiles(prev => [...prev, ...attachments]);
+  }, [readFileAsAttachment]);
+
+  const [isDragging, setIsDragging] = useState(false);
+
+  const onDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  }, []);
+
+  const onDragLeave = useCallback((e: React.DragEvent) => {
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      setIsDragging(false);
+    }
+  }, []);
+
+  const onDrop = useCallback(async (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    if (!activeSession || activeSession.status !== 'waiting') return;
+    const files = Array.from(e.dataTransfer.files);
+    await addFiles(files);
+  }, [activeSession, addFiles]);
+
+  const onPaste = useCallback(async (e: React.ClipboardEvent) => {
+    const files = Array.from(e.clipboardData.files);
+    if (!files.length) return;
+    e.preventDefault();
+    await addFiles(files);
+  }, [addFiles]);
+
   const send = useCallback(() => {
     const text = input.trim();
     if ((!text && attachedFiles.length === 0) || !activeId) return;
@@ -432,7 +471,12 @@ function App() {
           </div>
 
           {/* 输入区 — 独立固定在底部 */}
-          <div className="input-area">
+          <div
+            className={`input-area${isDragging ? ' dragging' : ''}`}
+            onDragOver={onDragOver}
+            onDragLeave={onDragLeave}
+            onDrop={onDrop}
+          >
             <input
               type="file"
               ref={fileInputRef}
@@ -454,6 +498,7 @@ function App() {
               value={input}
               onChange={e => setInput(e.target.value)}
               onKeyDown={onKeyDown}
+              onPaste={onPaste}
               placeholder={
                 activeSession?.status === 'waiting'
                   ? '输入消息... (Ctrl+Enter 发送)'
