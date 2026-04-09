@@ -94,9 +94,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   let sid = args?.session_id || newSessionId();
   const progressToken = request.params._meta?.progressToken;
 
-  // 清理残留 response
-  tryReadResponse(sid);
-
   // 通知扩展展示输入 UI
   writeRequest(sid, args?.last_response || '');
 

@@ -20929,7 +20929,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   }
   let sid = args?.session_id || newSessionId();
   const progressToken = request.params._meta?.progressToken;
-  tryReadResponse(sid);
   writeRequest(sid, args?.last_response || "");
   const startTime = Date.now();
   let nextHeartbeat = Date.now() + HEARTBEAT_INTERVAL_MS;

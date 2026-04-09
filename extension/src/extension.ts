@@ -39,6 +39,7 @@ type NewRequestPayload = {
   lastResponse: string;
   status: string;
   history: ChatMessage[];
+  forceActive?: boolean;
 };
 
 // ─── 工具函数 ────────────────────────────────────────────────────────────────
@@ -119,6 +120,7 @@ class CursorLoopProvider implements vscode.WebviewViewProvider {
         }
         writeResponse(sessionId, { message: content });
         this._post({ type: 'sent', sessionId });
+        this._scheduleDeliveryCheck(sessionId);
 
       } else if (type === 'sendWithFiles') {
         const content: string = msg.message?.trim() || '';
@@ -140,6 +142,7 @@ class CursorLoopProvider implements vscode.WebviewViewProvider {
         }
         writeResponse(sessionId, { message: content, attachments });
         this._post({ type: 'sent', sessionId });
+        this._scheduleDeliveryCheck(sessionId);
 
       } else if (type === 'setActive') {
         this._activeSessionId = sessionId;
@@ -199,6 +202,7 @@ class CursorLoopProvider implements vscode.WebviewViewProvider {
       lastResponse,
       status: 'waiting',
       history: [...session.history],
+      forceActive: isNew,
     };
 
     // 只有全新 session 才抢占焦点，续轮不打扰用户
@@ -225,6 +229,17 @@ class CursorLoopProvider implements vscode.WebviewViewProvider {
 
   addFilesToSession(sessionId: string, files: AttachedFile[]) {
     this._post({ type: 'addFilesToSession', sessionId, files });
+  }
+
+  // 写完 response 文件后，检查 8 秒内是否被 MCP 消费
+  private _scheduleDeliveryCheck(sessionId: string) {
+    const file = responseFile(sessionId);
+    setTimeout(() => {
+      if (fs.existsSync(file)) {
+        // 文件还在，说明 MCP server 没有在轮询（AI 已断开连接）
+        this._post({ type: 'messageNotDelivered', sessionId });
+      }
+    }, 8000);
   }
 
   private _post(msg: unknown) {

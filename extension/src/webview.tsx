@@ -30,6 +30,7 @@ interface Session {
   status: 'waiting' | 'processing' | 'cancelled';
   history: ChatMessage[];
   draft: string;
+  pendingSince?: number; // 消息发出时间，用于检测未送达
 }
 
 // ─── 样式 ────────────────────────────────────────────────────────────────────
@@ -96,9 +97,23 @@ const css = `
   .tab:hover .tab-close { opacity: 1; }
 
   .status-bar {
-    padding: 6px 12px; display: flex; align-items: center; gap: 8px;
+    padding: 4px 8px 4px 12px; display: flex; align-items: center; gap: 8px;
     border-bottom: 1px solid var(--vscode-panel-border);
     flex-shrink: 0; font-size: 12px;
+  }
+  .status-text { flex: 1; font-size: 11px; color: var(--vscode-descriptionForeground); }
+  .btn-composer {
+    padding: 2px 8px; border-radius: 3px; border: none; cursor: pointer;
+    font-size: 11px; flex-shrink: 0;
+    background: var(--vscode-button-secondaryBackground, #444);
+    color: var(--vscode-button-secondaryForeground, #ccc);
+  }
+  .stuck-banner {
+    padding: 6px 12px; font-size: 11px; line-height: 1.5;
+    background: var(--vscode-inputValidation-warningBackground, #6b5c00);
+    color: var(--vscode-inputValidation-warningForeground, #fff);
+    border-bottom: 1px solid var(--vscode-inputValidation-warningBorder, #b89500);
+    flex-shrink: 0; display: flex; align-items: center; gap: 8px;
   }
   .status-dot {
     width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
@@ -213,6 +228,7 @@ function App() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [input, setInput] = useState('');
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
+  const [stuckIds, setStuckIds] = useState<Set<string>>(new Set());
   const messagesRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -242,6 +258,11 @@ function App() {
         return;
       }
 
+      if (msg.type === 'messageNotDelivered') {
+        setStuckIds(prev => { const n = new Set(prev); n.add(msg.sessionId); return n; });
+        return;
+      }
+
       if (msg.type === 'newRequest') {
         const { sessionId, title, lastResponse, status, history } = msg;
         setSessions(prev => {
@@ -254,10 +275,16 @@ function App() {
             status: status || 'waiting',
             history: history || existing?.history || [],
             draft: existing?.draft || '',
+            pendingSince: undefined,
           });
           return next;
         });
-        setActiveId(id => id || sessionId);
+        setStuckIds(prev => { const n = new Set(prev); n.delete(sessionId); return n; });
+        if (msg.forceActive) {
+          setActiveId(sessionId);
+        } else {
+          setActiveId(id => id || sessionId);
+        }
         scrollToBottom();
         return;
       }
@@ -387,6 +414,7 @@ function App() {
           status: 'processing',
           history: [...s.history, { role: 'user', content: historyContent, timestamp: Date.now() }],
           draft: '',
+          pendingSince: Date.now(),
         });
       }
       return next;
@@ -454,10 +482,33 @@ function App() {
       {activeSession && (
         <div className="status-bar">
           <div className={`status-dot ${activeSession.status}`} />
-          <span style={{ fontSize: 11, color: 'var(--vscode-descriptionForeground)' }}>
+          <span className="status-text">
             {activeSession.status === 'waiting' ? 'AI 等待输入' :
              activeSession.status === 'processing' ? 'AI 处理中...' : '会话已结束'}
           </span>
+          <button
+            className="btn-composer"
+            onClick={() => vscode.postMessage({ type: 'reconnect', sessionId: activeSession.sessionId })}
+            title="打开 Cursor Composer"
+          >
+            打开 Composer
+          </button>
+        </div>
+      )}
+
+      {/* 消息未送达警告 */}
+      {activeSession && stuckIds.has(activeSession.sessionId) && (
+        <div className="stuck-banner">
+          <span style={{ flex: 1 }}>消息未送达，AI 已断开。</span>
+          <button
+            className="btn-composer"
+            style={{ fontSize: 11 }}
+            onClick={() => vscode.postMessage({ type: 'reconnect', sessionId: activeSession.sessionId })}
+          >打开 Composer</button>
+          <span
+            style={{ cursor: 'pointer', fontSize: 14, opacity: 0.7, marginLeft: 4 }}
+            onClick={() => setStuckIds(prev => { const n = new Set(prev); n.delete(activeSession.sessionId); return n; })}
+          >×</span>
         </div>
       )}
 
