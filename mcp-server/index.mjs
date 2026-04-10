@@ -9,7 +9,7 @@ const DATA_ROOT = path.join(os.homedir(), '.cursorloop-mcp');
 const POLL_INTERVAL_MS = 500;
 const HEARTBEAT_INTERVAL_MS = 20000;
 const EXT_PID = process.ppid;
-const MAX_WAIT_MS = 4 * 60 * 60 * 1000; // 等待 4 小时，适配长时间挂起场景
+const MAX_WAIT_MS = 4 * 60 * 60 * 1000;
 
 function ensureDir(dir) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
