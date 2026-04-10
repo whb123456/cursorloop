@@ -321,6 +321,8 @@ export function activate(context: vscode.ExtensionContext) {
   ensureDir(DATA_ROOT);
   setup(context);
 
+  const MY_EXT_PID = process.pid;
+
   // 启动时只清理超过 2 小时的残留文件，避免误删其他窗口正在使用的文件
   try {
     const TWO_HOURS = 2 * 60 * 60 * 1000;
@@ -343,17 +345,31 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
-  // 处理单个 request 文件
+  // 处理单个 request 文件，只处理属于当前窗口的 request（通过 ext_pid 匹配）
   const handleRequestFile = (file: string) => {
     if (!file.startsWith('request-') || !file.endsWith('.json')) return;
     const src = path.join(DATA_ROOT, file);
+
+    // 先读取文件内容检查 ext_pid，不 claim
+    let raw: string;
+    try {
+      raw = fs.readFileSync(src, 'utf-8').trim();
+      if (!raw) return;
+    } catch { return; }
+
+    let data: { session_id?: string; title?: string; last_response?: string; ext_pid?: number };
+    try {
+      data = JSON.parse(raw);
+    } catch { return; }
+
+    // 如果 request 带有 ext_pid 且不匹配当前扩展进程，跳过让正确的窗口处理
+    if (data.ext_pid && data.ext_pid !== MY_EXT_PID) return;
+
+    // ext_pid 匹配（或旧版 request 无 ext_pid 字段），claim 并处理
     const claimed = src + '.claimed';
     try { fs.renameSync(src, claimed); } catch { return; }
     try {
-      const raw = fs.readFileSync(claimed, 'utf-8').trim();
       fs.unlinkSync(claimed);
-      if (!raw) return;
-      const data = JSON.parse(raw);
       provider.newRequest(
         data.session_id || file.replace('request-', '').replace('.json', ''),
         data.title || '新会话',

@@ -20852,6 +20852,7 @@ import os from "os";
 var DATA_ROOT = path.join(os.homedir(), ".cursorloop-mcp");
 var POLL_INTERVAL_MS = 500;
 var HEARTBEAT_INTERVAL_MS = 2e4;
+var EXT_PID = process.ppid;
 var MAX_WAIT_MS = 4 * 60 * 60 * 1e3;
 function ensureDir(dir) {
   if (!fs.existsSync(dir))
@@ -20875,7 +20876,7 @@ function sessionTitle() {
   return `${ws} ${hm}`;
 }
 function writeRequest(sid, lastResponse) {
-  const data = JSON.stringify({ session_id: sid, title: sessionTitle(), last_response: lastResponse || "" });
+  const data = JSON.stringify({ session_id: sid, title: sessionTitle(), last_response: lastResponse || "", ext_pid: EXT_PID });
   const tmp = requestFile(sid) + ".tmp";
   fs.writeFileSync(tmp, data, "utf-8");
   fs.renameSync(tmp, requestFile(sid));

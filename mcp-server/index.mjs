@@ -8,6 +8,7 @@ import os from 'os';
 const DATA_ROOT = path.join(os.homedir(), '.cursorloop-mcp');
 const POLL_INTERVAL_MS = 500;
 const HEARTBEAT_INTERVAL_MS = 20000;
+const EXT_PID = process.ppid;
 const MAX_WAIT_MS = 4 * 60 * 60 * 1000; // 等待 4 小时，适配长时间挂起场景
 
 function ensureDir(dir) {
@@ -37,7 +38,7 @@ function sessionTitle() {
 }
 
 function writeRequest(sid, lastResponse) {
-  const data = JSON.stringify({ session_id: sid, title: sessionTitle(), last_response: lastResponse || '' });
+  const data = JSON.stringify({ session_id: sid, title: sessionTitle(), last_response: lastResponse || '', ext_pid: EXT_PID });
   const tmp = requestFile(sid) + '.tmp';
   fs.writeFileSync(tmp, data, 'utf-8');
   fs.renameSync(tmp, requestFile(sid));
