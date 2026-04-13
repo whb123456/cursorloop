@@ -20854,7 +20854,7 @@ var POLL_INTERVAL_MS = 500;
 var HEARTBEAT_INTERVAL_MS = 2e4;
 var HEARTBEAT_FILE_INTERVAL_MS = 3e3;
 var EXT_PID = process.ppid;
-var MAX_WAIT_MS = 4 * 60 * 60 * 1e3;
+var MAX_WAIT_MS = 10 * 60 * 1e3;
 function heartbeatFile(sid) {
   return path.join(DATA_ROOT, `heartbeat-${sid}.json`);
 }

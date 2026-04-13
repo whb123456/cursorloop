@@ -2,7 +2,7 @@
   "name": "cursorloop",
   "displayName": "CursorLoop",
   "description": "让 Cursor AI 保持持续对话，面板发消息，历史不丢失",
-  "version": "2.3.0",
+  "version": "2.3.1",
   "publisher": "cursorloop",
   "license": "MIT",
   "repository": {

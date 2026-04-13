@@ -10,7 +10,7 @@ const POLL_INTERVAL_MS = 500;
 const HEARTBEAT_INTERVAL_MS = 20000;
 const HEARTBEAT_FILE_INTERVAL_MS = 3000;
 const EXT_PID = process.ppid;
-const MAX_WAIT_MS = 4 * 60 * 60 * 1000;
+const MAX_WAIT_MS = 10 * 60 * 1000;
 
 function heartbeatFile(sid) {
   return path.join(DATA_ROOT, `heartbeat-${sid}.json`);
