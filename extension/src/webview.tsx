@@ -86,6 +86,7 @@ const css = `
     background: #6c7086;
   }
   .tab-dot.waiting  { background: #4caf50; box-shadow: 0 0 4px #4caf50; }
+  .tab-dot.disconnected { background: #f38ba8; box-shadow: 0 0 4px #f38ba8; }
   .tab-dot.processing { background: #89b4fa; box-shadow: 0 0 4px #89b4fa; }
   .tab-title { overflow: hidden; text-overflow: ellipsis; flex: 1; }
   .tab-close {
@@ -120,6 +121,7 @@ const css = `
     background: #6c7086;
   }
   .status-dot.waiting  { background: #4caf50; }
+  .status-dot.disconnected { background: #f38ba8; }
   .status-dot.processing { background: #89b4fa; }
 
   .messages {
@@ -229,6 +231,7 @@ function App() {
   const [input, setInput] = useState('');
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
   const [stuckIds, setStuckIds] = useState<Set<string>>(new Set());
+  const [disconnectedIds, setDisconnectedIds] = useState<Set<string>>(new Set());
   const messagesRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -263,6 +266,16 @@ function App() {
         return;
       }
 
+      if (msg.type === 'disconnected') {
+        setDisconnectedIds(prev => { const n = new Set(prev); n.add(msg.sessionId); return n; });
+        return;
+      }
+
+      if (msg.type === 'connected') {
+        setDisconnectedIds(prev => { const n = new Set(prev); n.delete(msg.sessionId); return n; });
+        return;
+      }
+
       if (msg.type === 'newRequest') {
         const { sessionId, title, lastResponse, status, history } = msg;
         setSessions(prev => {
@@ -280,6 +293,7 @@ function App() {
           return next;
         });
         setStuckIds(prev => { const n = new Set(prev); n.delete(sessionId); return n; });
+        setDisconnectedIds(prev => { const n = new Set(prev); n.delete(sessionId); return n; });
         if (msg.forceActive) {
           setActiveId(sessionId);
         } else {
@@ -458,7 +472,9 @@ function App() {
       {/* Tab 栏 */}
       {sessionList.length > 0 && (
         <div className="tab-bar">
-          {sessionList.map(s => (
+          {sessionList.map(s => {
+            const dotClass = s.status === 'waiting' && disconnectedIds.has(s.sessionId) ? 'disconnected' : s.status;
+            return (
             <div
               key={s.sessionId}
               className={`tab${s.sessionId === activeId ? ' active' : ''}`}
@@ -467,23 +483,25 @@ function App() {
                 vscode.postMessage({ type: 'setActive', sessionId: s.sessionId });
               }}
             >
-              <div className={`tab-dot ${s.status}`} />
+              <div className={`tab-dot ${dotClass}`} />
               <span className="tab-title">{s.title}</span>
               <span
                 className="tab-close"
                 onClick={e => { e.stopPropagation(); closeTab(s.sessionId); }}
               >×</span>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
       {/* 状态栏 */}
       {activeSession && (
         <div className="status-bar">
-          <div className={`status-dot ${activeSession.status}`} />
+          <div className={`status-dot ${activeSession.status === 'waiting' && disconnectedIds.has(activeSession.sessionId) ? 'disconnected' : activeSession.status}`} />
           <span className="status-text">
-            {activeSession.status === 'waiting' ? 'AI 等待输入' :
+            {activeSession.status === 'waiting' && disconnectedIds.has(activeSession.sessionId) ? 'AI 已断开' :
+             activeSession.status === 'waiting' ? 'AI 等待输入' :
              activeSession.status === 'processing' ? 'AI 处理中...' : '会话已结束'}
           </span>
           <button
@@ -508,6 +526,22 @@ function App() {
           <span
             style={{ cursor: 'pointer', fontSize: 14, opacity: 0.7, marginLeft: 4 }}
             onClick={() => setStuckIds(prev => { const n = new Set(prev); n.delete(activeSession.sessionId); return n; })}
+          >×</span>
+        </div>
+      )}
+
+      {/* 连接断开警告 */}
+      {activeSession && activeSession.status === 'waiting' && !stuckIds.has(activeSession.sessionId) && disconnectedIds.has(activeSession.sessionId) && (
+        <div className="stuck-banner">
+          <span style={{ flex: 1 }}>AI 连接已断开，请重新建立连接。</span>
+          <button
+            className="btn-composer"
+            style={{ fontSize: 11 }}
+            onClick={() => vscode.postMessage({ type: 'reconnect', sessionId: activeSession.sessionId })}
+          >打开 Composer</button>
+          <span
+            style={{ cursor: 'pointer', fontSize: 14, opacity: 0.7, marginLeft: 4 }}
+            onClick={() => setDisconnectedIds(prev => { const n = new Set(prev); n.delete(activeSession.sessionId); return n; })}
           >×</span>
         </div>
       )}

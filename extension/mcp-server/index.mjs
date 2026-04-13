@@ -20852,8 +20852,24 @@ import os from "os";
 var DATA_ROOT = path.join(os.homedir(), ".cursorloop-mcp");
 var POLL_INTERVAL_MS = 500;
 var HEARTBEAT_INTERVAL_MS = 2e4;
+var HEARTBEAT_FILE_INTERVAL_MS = 3e3;
 var EXT_PID = process.ppid;
 var MAX_WAIT_MS = 4 * 60 * 60 * 1e3;
+function heartbeatFile(sid) {
+  return path.join(DATA_ROOT, `heartbeat-${sid}.json`);
+}
+function writeHeartbeat(sid) {
+  try {
+    fs.writeFileSync(heartbeatFile(sid), JSON.stringify({ ts: Date.now(), pid: process.pid }), "utf-8");
+  } catch {
+  }
+}
+function removeHeartbeat(sid) {
+  try {
+    fs.unlinkSync(heartbeatFile(sid));
+  } catch {
+  }
+}
 function ensureDir(dir) {
   if (!fs.existsSync(dir))
     fs.mkdirSync(dir, { recursive: true });
@@ -20931,16 +20947,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   let sid = args?.session_id || newSessionId();
   const progressToken = request.params._meta?.progressToken;
   writeRequest(sid, args?.last_response || "");
+  writeHeartbeat(sid);
   const startTime = Date.now();
   let nextHeartbeat = Date.now() + HEARTBEAT_INTERVAL_MS;
+  let nextHbFile = Date.now() + HEARTBEAT_FILE_INTERVAL_MS;
   while (true) {
     if (Date.now() - startTime > MAX_WAIT_MS) {
+      removeHeartbeat(sid);
       return {
         content: [{ type: "text", text: JSON.stringify({ session_id: sid, status: "still_waiting", message: '\u6682\u65E0\u65B0\u6D88\u606F\uFF0C\u7EE7\u7EED\u7B49\u5F85\u4E2D\u3002\u8BF7\u7ACB\u523B\u518D\u6B21\u8C03\u7528 check_messages(session_id="' + sid + '") \u4FDD\u6301\u8FDE\u63A5\u3002' }) }]
       };
     }
+    if (Date.now() >= nextHbFile) {
+      writeHeartbeat(sid);
+      nextHbFile = Date.now() + HEARTBEAT_FILE_INTERVAL_MS;
+    }
     const resp = tryReadResponse(sid);
     if (resp !== null) {
+      removeHeartbeat(sid);
       if (resp.cancelled) {
         return { content: [{ type: "text", text: JSON.stringify({ session_id: sid, status: "cancelled" }) }] };
       }

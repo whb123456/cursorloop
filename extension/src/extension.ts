@@ -76,6 +76,12 @@ function responseFile(sid: string): string {
   return path.join(DATA_ROOT, `response-${sid}.json`);
 }
 
+function heartbeatFile(sid: string): string {
+  return path.join(DATA_ROOT, `heartbeat-${sid}.json`);
+}
+
+const HEARTBEAT_STALE_MS = 10000;
+
 function writeResponse(sid: string, data: unknown) {
   ensureDir(DATA_ROOT);
   const file = responseFile(sid);
@@ -229,6 +235,29 @@ class CursorLoopProvider implements vscode.WebviewViewProvider {
 
   addFilesToSession(sessionId: string, files: AttachedFile[]) {
     this._post({ type: 'addFilesToSession', sessionId, files });
+  }
+
+  // 检查所有 waiting 状态的 session 的心跳是否过期
+  checkHeartbeats() {
+    for (const [sid, session] of this._sessions) {
+      if (session.status !== 'waiting') continue;
+      const hbFile = heartbeatFile(sid);
+      try {
+        if (!fs.existsSync(hbFile)) {
+          this._post({ type: 'disconnected', sessionId: sid });
+          continue;
+        }
+        const raw = fs.readFileSync(hbFile, 'utf-8').trim();
+        const data = JSON.parse(raw);
+        if (Date.now() - data.ts > HEARTBEAT_STALE_MS) {
+          this._post({ type: 'disconnected', sessionId: sid });
+        } else {
+          this._post({ type: 'connected', sessionId: sid });
+        }
+      } catch {
+        this._post({ type: 'disconnected', sessionId: sid });
+      }
+    }
   }
 
   // 写完 response 文件后，检查 8 秒内是否被 MCP 消费
@@ -393,6 +422,7 @@ export function activate(context: vscode.ExtensionContext) {
       const files = fs.readdirSync(DATA_ROOT);
       for (const f of files) handleRequestFile(f);
     } catch { /* ignore */ }
+    provider.checkHeartbeats();
   }, 5000);
   context.subscriptions.push({ dispose: () => clearInterval(fallbackTimer) });
 

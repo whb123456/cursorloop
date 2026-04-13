@@ -8,8 +8,23 @@ import os from 'os';
 const DATA_ROOT = path.join(os.homedir(), '.cursorloop-mcp');
 const POLL_INTERVAL_MS = 500;
 const HEARTBEAT_INTERVAL_MS = 20000;
+const HEARTBEAT_FILE_INTERVAL_MS = 3000;
 const EXT_PID = process.ppid;
 const MAX_WAIT_MS = 4 * 60 * 60 * 1000;
+
+function heartbeatFile(sid) {
+  return path.join(DATA_ROOT, `heartbeat-${sid}.json`);
+}
+
+function writeHeartbeat(sid) {
+  try {
+    fs.writeFileSync(heartbeatFile(sid), JSON.stringify({ ts: Date.now(), pid: process.pid }), 'utf-8');
+  } catch {}
+}
+
+function removeHeartbeat(sid) {
+  try { fs.unlinkSync(heartbeatFile(sid)); } catch {}
+}
 
 function ensureDir(dir) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -97,20 +112,29 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
 
   // 通知扩展展示输入 UI
   writeRequest(sid, args?.last_response || '');
+  writeHeartbeat(sid);
 
   const startTime = Date.now();
   let nextHeartbeat = Date.now() + HEARTBEAT_INTERVAL_MS;
+  let nextHbFile = Date.now() + HEARTBEAT_FILE_INTERVAL_MS;
 
   while (true) {
-    // 超过 MAX_WAIT_MS（10 分钟）还没消息，返回 still_waiting 让 AI 继续调
     if (Date.now() - startTime > MAX_WAIT_MS) {
+      removeHeartbeat(sid);
       return {
         content: [{ type: 'text', text: JSON.stringify({ session_id: sid, status: 'still_waiting', message: '暂无新消息，继续等待中。请立刻再次调用 check_messages(session_id="' + sid + '") 保持连接。' }) }],
       };
     }
 
+    // 定期更新心跳文件，让扩展知道 MCP 还在轮询
+    if (Date.now() >= nextHbFile) {
+      writeHeartbeat(sid);
+      nextHbFile = Date.now() + HEARTBEAT_FILE_INTERVAL_MS;
+    }
+
     const resp = tryReadResponse(sid);
     if (resp !== null) {
+      removeHeartbeat(sid);
       if (resp.cancelled) {
         return { content: [{ type: 'text', text: JSON.stringify({ session_id: sid, status: 'cancelled' }) }] };
       }
