@@ -358,7 +358,7 @@ function setup(context: vscode.ExtensionContext) {
   (mcpConfig.mcpServers as Record<string, unknown>)['CursorLoop'] = {
     command: 'node',
     args: [MCP_SERVER_DST],
-    timeoutMs: 1800000,
+    timeoutMs: 86400000,
   };
   ensureDir(path.dirname(MCP_CONFIG_PATH));
   fs.writeFileSync(MCP_CONFIG_PATH, JSON.stringify(mcpConfig, null, 2), 'utf-8');

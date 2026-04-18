@@ -11,7 +11,7 @@ const POLL_INTERVAL_MS = 500;
 const HEARTBEAT_INTERVAL_MS = 20000;
 const HEARTBEAT_FILE_INTERVAL_MS = 3000;
 const EXT_PID = process.ppid;
-const MAX_WAIT_MS = 25 * 60 * 1000; // 25 分钟，需小于 mcp.json 中 timeoutMs(30min)
+const MAX_WAIT_MS = 4 * 60 * 60 * 1000; // 4 小时
 
 // 每个 sid 当前活跃的 check_messages 调用 epoch（用于取消旧调用）
 const activeCallEpoch = new Map();
@@ -173,7 +173,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     }
 
     if (Date.now() - startTime > MAX_WAIT_MS) {
-      mcpLog('WARN', `MAX_WAIT_MS reached (25min), returning still_waiting`, { sid, waited_ms: Date.now() - startTime });
+      mcpLog('WARN', `MAX_WAIT_MS reached (4h), returning still_waiting`, { sid, waited_ms: Date.now() - startTime });
       activeCallEpoch.delete(sid);
       removeHeartbeat(sid);
       return {

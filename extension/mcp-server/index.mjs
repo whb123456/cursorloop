@@ -20855,7 +20855,7 @@ var POLL_INTERVAL_MS = 500;
 var HEARTBEAT_INTERVAL_MS = 2e4;
 var HEARTBEAT_FILE_INTERVAL_MS = 3e3;
 var EXT_PID = process.ppid;
-var MAX_WAIT_MS = 25 * 60 * 1e3;
+var MAX_WAIT_MS = 4 * 60 * 60 * 1e3;
 var activeCallEpoch = /* @__PURE__ */ new Map();
 function ensureLogDir() {
   if (!fs.existsSync(LOG_DIR))
@@ -21005,7 +21005,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
       };
     }
     if (Date.now() - startTime > MAX_WAIT_MS) {
-      mcpLog("WARN", `MAX_WAIT_MS reached (25min), returning still_waiting`, { sid, waited_ms: Date.now() - startTime });
+      mcpLog("WARN", `MAX_WAIT_MS reached (4h), returning still_waiting`, { sid, waited_ms: Date.now() - startTime });
       activeCallEpoch.delete(sid);
       removeHeartbeat(sid);
       return {
