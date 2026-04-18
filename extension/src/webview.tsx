@@ -473,7 +473,7 @@ function App() {
       {sessionList.length > 0 && (
         <div className="tab-bar">
           {sessionList.map(s => {
-            const dotClass = s.status === 'waiting' && disconnectedIds.has(s.sessionId) ? 'disconnected' : s.status;
+            const dotClass = disconnectedIds.has(s.sessionId) && (s.status === 'waiting' || s.status === 'processing') ? 'disconnected' : s.status;
             return (
             <div
               key={s.sessionId}
@@ -498,9 +498,9 @@ function App() {
       {/* 状态栏 */}
       {activeSession && (
         <div className="status-bar">
-          <div className={`status-dot ${activeSession.status === 'waiting' && disconnectedIds.has(activeSession.sessionId) ? 'disconnected' : activeSession.status}`} />
+          <div className={`status-dot ${disconnectedIds.has(activeSession.sessionId) && (activeSession.status === 'waiting' || activeSession.status === 'processing') ? 'disconnected' : activeSession.status}`} />
           <span className="status-text">
-            {activeSession.status === 'waiting' && disconnectedIds.has(activeSession.sessionId) ? 'AI 已断开' :
+            {disconnectedIds.has(activeSession.sessionId) && (activeSession.status === 'waiting' || activeSession.status === 'processing') ? 'AI 已断开' :
              activeSession.status === 'waiting' ? 'AI 等待输入' :
              activeSession.status === 'processing' ? 'AI 处理中...' : '会话已结束'}
           </span>

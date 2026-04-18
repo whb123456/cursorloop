@@ -4,10 +4,37 @@ import * as path from 'path';
 import * as os from 'os';
 
 const DATA_ROOT = path.join(os.homedir(), '.cursorloop-mcp');
+const LOG_DIR = path.join(DATA_ROOT, 'logs');
 const MCP_SERVER_DST = path.join(DATA_ROOT, 'index.mjs');
 const MCP_CONFIG_PATH = path.join(os.homedir(), '.cursor', 'mcp.json');
 const RULES_DIR = path.join(os.homedir(), '.cursor', 'rules');
 const RULE_FILE = path.join(RULES_DIR, 'cursorloop.mdc');
+
+function ensureLogDir() {
+  if (!fs.existsSync(LOG_DIR)) { fs.mkdirSync(LOG_DIR, { recursive: true }); }
+}
+
+function extLog(level: string, msg: string, extra?: Record<string, unknown>) {
+  try {
+    ensureLogDir();
+    const ts = new Date().toISOString();
+    const line = `[${ts}] [EXT:${process.pid}] [${level}] ${msg}${extra ? ' ' + JSON.stringify(extra) : ''}\n`;
+    fs.appendFileSync(path.join(LOG_DIR, 'extension.log'), line, 'utf-8');
+  } catch { /* ignore */ }
+}
+
+function rotateExtLogs() {
+  try {
+    const logFile = path.join(LOG_DIR, 'extension.log');
+    if (!fs.existsSync(logFile)) { return; }
+    const stat = fs.statSync(logFile);
+    if (stat.size > 5 * 1024 * 1024) {
+      const backup = path.join(LOG_DIR, 'extension.log.old');
+      try { fs.unlinkSync(backup); } catch { /* ignore */ }
+      fs.renameSync(logFile, backup);
+    }
+  } catch { /* ignore */ }
+}
 
 // ─── 类型 ────────────────────────────────────────────────────────────────────
 
@@ -89,7 +116,9 @@ function writeResponse(sid: string, data: unknown) {
   try {
     fs.writeFileSync(tmp, JSON.stringify(data), 'utf-8');
     fs.renameSync(tmp, file);
-  } catch {
+    extLog('DEBUG', 'writeResponse done', { sid, file: `response-${sid}.json` });
+  } catch (e) {
+    extLog('ERROR', 'writeResponse failed with rename, falling back', { sid, error: String(e) });
     try { fs.writeFileSync(file, JSON.stringify(data), 'utf-8'); } catch { }
   }
 }
@@ -120,9 +149,11 @@ class CursorLoopProvider implements vscode.WebviewViewProvider {
       if (type === 'send') {
         const content: string = msg.message?.trim();
         if (!content) return;
+        extLog('INFO', 'user send message', { sessionId, msg_len: content.length, prev_status: session?.status });
         if (session) {
           session.history.push({ role: 'user', content, timestamp: Date.now() });
           session.status = 'processing';
+          extLog('DEBUG', 'session status -> processing', { sessionId });
         }
         writeResponse(sessionId, { message: content });
         this._post({ type: 'sent', sessionId });
@@ -165,6 +196,7 @@ class CursorLoopProvider implements vscode.WebviewViewProvider {
         }
 
       } else if (type === 'cancel') {
+        extLog('INFO', 'user cancel session', { sessionId, prev_status: session?.status });
         writeResponse(sessionId, { cancelled: true });
         if (session) session.status = 'cancelled';
         this._post({ type: 'cancelled', sessionId });
@@ -187,6 +219,7 @@ class CursorLoopProvider implements vscode.WebviewViewProvider {
 
   newRequest(sessionId: string, title: string, lastResponse: string) {
     const isNew = !this._sessions.has(sessionId);
+    extLog('INFO', 'newRequest', { sessionId, isNew, title, lastResponse_len: (lastResponse || '').length });
     let session = this._sessions.get(sessionId);
     if (!session) {
       session = { sessionId, title, status: 'waiting', history: [], draft: '', lastAiContent: '' };
@@ -195,12 +228,15 @@ class CursorLoopProvider implements vscode.WebviewViewProvider {
       session.title = title;
     }
 
-    // 把 AI 的上次回复追加到历史（仅当内容有变化时，避免 still_waiting 续轮重复追加）
+    const prevStatus = session.status;
     if (lastResponse?.trim() && lastResponse !== session.lastAiContent) {
       session.history.push({ role: 'ai', content: lastResponse, timestamp: Date.now() });
       session.lastAiContent = lastResponse;
     }
     session.status = 'waiting';
+    if (prevStatus !== 'waiting') {
+      extLog('DEBUG', 'session status -> waiting', { sessionId, prevStatus });
+    }
 
     const payload: NewRequestPayload = {
       sessionId,
@@ -240,32 +276,39 @@ class CursorLoopProvider implements vscode.WebviewViewProvider {
   // 检查所有 waiting 状态的 session 的心跳是否过期
   checkHeartbeats() {
     for (const [sid, session] of this._sessions) {
-      if (session.status !== 'waiting') continue;
+      if (session.status === 'cancelled') continue;
+
       const hbFile = heartbeatFile(sid);
+      let hbExists = false;
+      let hbAge = Infinity;
       try {
-        if (!fs.existsSync(hbFile)) {
-          this._post({ type: 'disconnected', sessionId: sid });
-          continue;
+        if (fs.existsSync(hbFile)) {
+          hbExists = true;
+          const raw = fs.readFileSync(hbFile, 'utf-8').trim();
+          const data = JSON.parse(raw);
+          hbAge = Date.now() - data.ts;
         }
-        const raw = fs.readFileSync(hbFile, 'utf-8').trim();
-        const data = JSON.parse(raw);
-        if (Date.now() - data.ts > HEARTBEAT_STALE_MS) {
+      } catch { /* ignore */ }
+
+      if (session.status === 'waiting') {
+        if (!hbExists || hbAge > HEARTBEAT_STALE_MS) {
+          if (!hbExists) { extLog('WARN', 'heartbeat file missing', { sid }); }
+          else { extLog('WARN', 'heartbeat stale', { sid, age_ms: hbAge }); }
           this._post({ type: 'disconnected', sessionId: sid });
         } else {
           this._post({ type: 'connected', sessionId: sid });
         }
-      } catch {
-        this._post({ type: 'disconnected', sessionId: sid });
+      } else if (session.status === 'processing') {
+        extLog('DEBUG', 'checkHeartbeats: processing session', { sid, hbExists, hbAge_ms: hbAge === Infinity ? 'N/A' : hbAge });
       }
     }
   }
 
-  // 写完 response 文件后，检查 8 秒内是否被 MCP 消费
   private _scheduleDeliveryCheck(sessionId: string) {
     const file = responseFile(sessionId);
     setTimeout(() => {
       if (fs.existsSync(file)) {
-        // 文件还在，说明 MCP server 没有在轮询（AI 已断开连接）
+        extLog('WARN', 'message not delivered (response file still exists after 8s)', { sessionId });
         this._post({ type: 'messageNotDelivered', sessionId });
       }
     }, 8000);
@@ -315,7 +358,7 @@ function setup(context: vscode.ExtensionContext) {
   (mcpConfig.mcpServers as Record<string, unknown>)['CursorLoop'] = {
     command: 'node',
     args: [MCP_SERVER_DST],
-    timeoutMs: 86400000,
+    timeoutMs: 1800000,
   };
   ensureDir(path.dirname(MCP_CONFIG_PATH));
   fs.writeFileSync(MCP_CONFIG_PATH, JSON.stringify(mcpConfig, null, 2), 'utf-8');
@@ -331,15 +374,22 @@ alwaysApply: true
 你有一个叫 check_messages 的 MCP 工具。
 
 规则：
-1. 每次你输出完回复之后，无论什么情况，必须立刻调用一次 check_messages 工具，然后根据工具返回的内容处理：
+1. 每轮对话回复**完整输出后**，最后一步必须调用 check_messages，适用于 Agent/Plan/Debug/Ask 所有模式，无一例外。严禁在回合开始时或回复未完成时调用。
+2. check_messages 会持续等待直到用户发来新消息；收到后处理并回复，然后再次调用 check_messages，形成永续循环：回复 → check_messages → 收到消息 → 回复 → check_messages。
+3. 根据工具返回的内容处理：
    - status 为 "message"：根据 message 字段内容回复用户，然后再次调用 check_messages
    - status 为 "still_waiting"：不要输出任何文字，直接再次调用 check_messages(session_id=上次的id)
    - status 为 "cancelled"：停止调用
-2. 调用 check_messages 时传以下参数：
-   - session_id：第一次调用时不传，之后每次传上次返回的 session_id。
+4. 调用 check_messages 时传以下参数：
+   - session_id：第一次调用时不传，之后每次传上次返回的 session_id。后续所有调用都必须带上此 session_id，这是会话隔离的必要条件。
    - last_response：你刚才回复内容的简短摘要（用于面板展示）。
-3. 不允许用文字告诉用户"我要调用工具了"，直接调用。
-4. 除非用户明确说结束对话，否则永远不要停止循环。
+5. 不允许用文字告诉用户"我要调用工具了"，直接调用。
+6. 除非用户明确说结束对话，否则永远不要停止循环。
+7. 如果 check_messages 因客户端取消、连接抖动或内部异常而意外返回或报错，且用户未明确要求结束对话，严禁把这类内部提示直接输出给用户，必须立刻再次调用 check_messages(session_id=上次的id) 继续等待。
+8. 如果收到 status 为 "superseded"，说明有更新的调用已取代此次调用，不需要任何操作，忽略即可。
+9. 严禁并发调用 check_messages：在上一次 check_messages 返回之前，绝对不允许发起新的 check_messages 调用。每次只能有一个 check_messages 在等待。
+10. Plan 模式写完方案后、Debug 模式分析完问题后、Ask 模式回答完问题后，均不得直接结束对话，必须调用 check_messages 等待用户反馈。
+11. 可以使用 subagent（Task 工具）执行搜索、分析等独立任务，但 check_messages 必须由主 Agent 调用，subagent 不得调用。
 `;
   fs.writeFileSync(RULE_FILE, rule, 'utf-8');
 }
@@ -348,9 +398,11 @@ alwaysApply: true
 
 export function activate(context: vscode.ExtensionContext) {
   ensureDir(DATA_ROOT);
+  rotateExtLogs();
   setup(context);
 
   const MY_EXT_PID = process.pid;
+  extLog('INFO', 'Extension activating', { pid: MY_EXT_PID, ppid: process.ppid, data_root: DATA_ROOT });
 
   // 启动时只清理超过 2 小时的残留文件，避免误删其他窗口正在使用的文件
   try {
@@ -374,12 +426,10 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
-  // 处理单个 request 文件，只处理属于当前窗口的 request（通过 ext_pid 匹配）
   const handleRequestFile = (file: string) => {
     if (!file.startsWith('request-') || !file.endsWith('.json')) return;
     const src = path.join(DATA_ROOT, file);
 
-    // 先读取文件内容检查 ext_pid，不 claim
     let raw: string;
     try {
       raw = fs.readFileSync(src, 'utf-8').trim();
@@ -391,10 +441,13 @@ export function activate(context: vscode.ExtensionContext) {
       data = JSON.parse(raw);
     } catch { return; }
 
-    // 如果 request 带有 ext_pid 且不匹配当前扩展进程，跳过让正确的窗口处理
-    if (data.ext_pid && data.ext_pid !== MY_EXT_PID) return;
+    if (data.ext_pid && data.ext_pid !== MY_EXT_PID) {
+      extLog('DEBUG', 'handleRequestFile: skip (ext_pid mismatch)', { file, ext_pid: data.ext_pid, my_pid: MY_EXT_PID });
+      return;
+    }
 
-    // ext_pid 匹配（或旧版 request 无 ext_pid 字段），claim 并处理
+    extLog('INFO', 'handleRequestFile: claiming', { file, sid: data.session_id, ext_pid: data.ext_pid, my_pid: MY_EXT_PID });
+
     const claimed = src + '.claimed';
     try { fs.renameSync(src, claimed); } catch { return; }
     try {
@@ -404,8 +457,9 @@ export function activate(context: vscode.ExtensionContext) {
         data.title || '新会话',
         data.last_response || '',
       );
-    } catch {
-      try { fs.unlinkSync(claimed); } catch { }
+    } catch (e) {
+      extLog('ERROR', 'handleRequestFile: process error', { file, error: String(e) });
+      try { fs.unlinkSync(claimed); } catch { /* ignore */ }
     }
   };
 

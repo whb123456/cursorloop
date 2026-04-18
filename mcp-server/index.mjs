@@ -6,11 +6,41 @@ import path from 'path';
 import os from 'os';
 
 const DATA_ROOT = path.join(os.homedir(), '.cursorloop-mcp');
+const LOG_DIR = path.join(DATA_ROOT, 'logs');
 const POLL_INTERVAL_MS = 500;
 const HEARTBEAT_INTERVAL_MS = 20000;
 const HEARTBEAT_FILE_INTERVAL_MS = 3000;
 const EXT_PID = process.ppid;
-const MAX_WAIT_MS = 10 * 60 * 1000;
+const MAX_WAIT_MS = 25 * 60 * 1000; // 25 分钟，需小于 mcp.json 中 timeoutMs(30min)
+
+// 每个 sid 当前活跃的 check_messages 调用 epoch（用于取消旧调用）
+const activeCallEpoch = new Map();
+
+function ensureLogDir() {
+  if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true });
+}
+
+function mcpLog(level, msg, extra) {
+  try {
+    ensureLogDir();
+    const ts = new Date().toISOString();
+    const line = `[${ts}] [MCP:${process.pid}] [${level}] ${msg}${extra ? ' ' + JSON.stringify(extra) : ''}\n`;
+    fs.appendFileSync(path.join(LOG_DIR, 'mcp.log'), line, 'utf-8');
+  } catch {}
+}
+
+function rotateLogs() {
+  try {
+    const logFile = path.join(LOG_DIR, 'mcp.log');
+    if (!fs.existsSync(logFile)) return;
+    const stat = fs.statSync(logFile);
+    if (stat.size > 5 * 1024 * 1024) {
+      const backup = path.join(LOG_DIR, 'mcp.log.old');
+      try { fs.unlinkSync(backup); } catch {}
+      fs.renameSync(logFile, backup);
+    }
+  } catch {}
+}
 
 function heartbeatFile(sid) {
   return path.join(DATA_ROOT, `heartbeat-${sid}.json`);
@@ -57,6 +87,7 @@ function writeRequest(sid, lastResponse) {
   const tmp = requestFile(sid) + '.tmp';
   fs.writeFileSync(tmp, data, 'utf-8');
   fs.renameSync(tmp, requestFile(sid));
+  mcpLog('DEBUG', 'writeRequest done', { sid, ext_pid: EXT_PID });
 }
 
 function tryReadResponse(sid) {
@@ -65,8 +96,11 @@ function tryReadResponse(sid) {
   try {
     const raw = fs.readFileSync(file, 'utf-8').trim();
     fs.unlinkSync(file);
-    return JSON.parse(raw);
-  } catch {
+    const parsed = JSON.parse(raw);
+    mcpLog('DEBUG', 'tryReadResponse: got response file', { sid, cancelled: !!parsed.cancelled, msg_len: (parsed.message || '').length });
+    return parsed;
+  } catch (e) {
+    mcpLog('WARN', 'tryReadResponse: failed to read/parse', { sid, error: String(e) });
     try { fs.unlinkSync(file); } catch { }
     return null;
   }
@@ -107,10 +141,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     return { content: [{ type: 'text', text: 'unknown tool' }] };
   }
 
+  rotateLogs();
+  const isNew = !args?.session_id;
   let sid = args?.session_id || newSessionId();
   const progressToken = request.params._meta?.progressToken;
 
-  // 通知扩展展示输入 UI
+  // 取消同 sid 的旧调用
+  const callEpoch = Date.now();
+  const prevEpoch = activeCallEpoch.get(sid);
+  activeCallEpoch.set(sid, callEpoch);
+  if (prevEpoch) {
+    mcpLog('INFO', `cancelling previous call for same sid`, { sid, prev_epoch: prevEpoch, new_epoch: callEpoch });
+  }
+
+  mcpLog('INFO', `check_messages called`, { sid, isNew, ext_pid: EXT_PID, ppid: process.ppid, last_response_len: (args?.last_response || '').length, epoch: callEpoch, hasProgressToken: progressToken !== undefined, progressToken: progressToken });
+
   writeRequest(sid, args?.last_response || '');
   writeHeartbeat(sid);
 
@@ -119,14 +164,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   let nextHbFile = Date.now() + HEARTBEAT_FILE_INTERVAL_MS;
 
   while (true) {
-    if (Date.now() - startTime > MAX_WAIT_MS) {
-      removeHeartbeat(sid);
+    // 检查是否被同 sid 的新调用取代
+    if (activeCallEpoch.get(sid) !== callEpoch) {
+      mcpLog('INFO', `call superseded by newer call, exiting loop`, { sid, my_epoch: callEpoch, current_epoch: activeCallEpoch.get(sid) });
       return {
-        content: [{ type: 'text', text: JSON.stringify({ session_id: sid, status: 'still_waiting', message: '暂无新消息，继续等待中。请立刻再次调用 check_messages(session_id="' + sid + '") 保持连接。' }) }],
+        content: [{ type: 'text', text: JSON.stringify({ session_id: sid, status: 'superseded' }) }],
       };
     }
 
-    // 定期更新心跳文件，让扩展知道 MCP 还在轮询
+    if (Date.now() - startTime > MAX_WAIT_MS) {
+      mcpLog('WARN', `MAX_WAIT_MS reached (25min), returning still_waiting`, { sid, waited_ms: Date.now() - startTime });
+      activeCallEpoch.delete(sid);
+      removeHeartbeat(sid);
+      return {
+        content: [{ type: 'text', text: JSON.stringify({ session_id: sid, status: 'still_waiting' }) }],
+      };
+    }
+
     if (Date.now() >= nextHbFile) {
       writeHeartbeat(sid);
       nextHbFile = Date.now() + HEARTBEAT_FILE_INTERVAL_MS;
@@ -134,11 +188,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
 
     const resp = tryReadResponse(sid);
     if (resp !== null) {
+      activeCallEpoch.delete(sid);
       removeHeartbeat(sid);
       if (resp.cancelled) {
+        mcpLog('INFO', `session cancelled by user`, { sid });
         return { content: [{ type: 'text', text: JSON.stringify({ session_id: sid, status: 'cancelled' }) }] };
       }
       const msg = resp.message || '';
+      mcpLog('INFO', `received user message`, { sid, msg_len: msg.length, attachments: (resp.attachments || []).length, waited_ms: Date.now() - startTime });
       const meta = {
         session_id: sid,
         status: 'message',
@@ -147,12 +204,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
       };
       const content = [{ type: 'text', text: JSON.stringify(meta) }];
 
-      // 把附件作为多模态 content blocks 追加，让 AI 能真正读取内容
       for (const att of (resp.attachments || [])) {
         if (att.type === 'image' && att.data && att.mimeType) {
           content.push({ type: 'image', data: att.data, mimeType: att.mimeType });
         } else if (att.type === 'pdf' && att.data) {
-          // PDF 以 resource blob 形式传递，支持 Claude 原生 PDF 解析
           content.push({
             type: 'resource',
             resource: {
@@ -166,10 +221,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         }
       }
 
+      mcpLog('INFO', 'returning user message to AI', { sid, content_items: content.length, epoch: callEpoch });
       return { content };
     }
 
-    // 心跳
     if (Date.now() >= nextHeartbeat) {
       if (progressToken !== undefined) {
         try {
@@ -187,5 +242,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
 });
 
 ensureDir(DATA_ROOT);
+mcpLog('INFO', 'MCP server starting', { pid: process.pid, ppid: process.ppid, ext_pid: EXT_PID, data_root: DATA_ROOT });
 const transport = new StdioServerTransport();
 await server.connect(transport);
+mcpLog('INFO', 'MCP server connected via stdio');
